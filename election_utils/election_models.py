@@ -1,5 +1,5 @@
 import abc
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional
 
 from pydantic import ConfigDict
@@ -94,7 +94,7 @@ class ElectionTypeDetailsBase(SQLModelBase):
             key_string += f"-{self.city}"
         if self.county:
             key_string += f"-{self.county}"
-        key_string += f"-{self.year}-{self.election_type.value}"
+        key_string += f"-{self.year}-{self.election_type}"
         self.id = key_string.replace(" ", "")
         return self.id
 
@@ -177,7 +177,7 @@ class ElectionVoteMethodBase(SQLModelBase):
     def generate_hash_key(self) -> str:
         key_string: str = f"{self.election_id}"
         if self.vote_method:
-            key_string += f"-{self.vote_method.value}"
+            key_string += f"-{self.vote_method}"
         if self.vote_date:
             key_string += f"-{self.vote_date:  %Y%m%d}"
         if self.party:
@@ -222,3 +222,44 @@ class ElectionVote(ElectionVoteBase, table=True):
     record: "RecordBaseModel" = Relationship(
         back_populates="vote_history",
     )
+
+
+class ElectionTurnoutCalculator(SQLModelBase):
+    primary_score: float = SQLModelField(default=0.0)
+    primary_runoff_score: float = SQLModelField(default=0.0)
+    gop_primary_score: float = SQLModelField(default=0.0)
+    dem_primary_score: float = SQLModelField(default=0.0)
+    gop_primary_runoff_score: float = SQLModelField(default=0.0)
+    dem_primary_runoff_score: float = SQLModelField(default=0.0)
+    general_score: float = SQLModelField(default=0.0)
+    special_score: float = SQLModelField(default=0.0)
+    
+    def calculate_scores(self, election_list: list[ElectionDataTuple]):
+        past_10_years = datetime.now() - timedelta(days=365 * 10)
+        
+        # Filter out elections that are older than 10 years
+        recent_elections = [x for x in election_list if datetime.strptime(x.election.year, '%Y').year > past_10_years.year]
+        
+        primaries = [x for x in recent_elections if x.election.election_type in ElectionTypeCodesBase.PRIMARY]
+        generals = [x for x in recent_elections if x.election.election_type == ElectionTypeCodesBase.GENERAL]
+        specials = [x for x in recent_elections if x.election.election_type == ElectionTypeCodesBase.SPECIAL]
+        primary_runoffs = [x for x in recent_elections if x.election.election_type == ElectionTypeCodesBase.PRIMARY_RUNOFF]
+        
+        voted_in_gop_primary = [x for x in primaries if x.vote_method.party == PoliticalPartyCodesBase.REPUBLICAN]
+        voted_in_dem_primary = [x for x in primaries if x.vote_method.party == PoliticalPartyCodesBase.DEMOCRATIC]
+        voted_in_gop_primary_runoff = [x for x in primary_runoffs if x.vote_method.party == PoliticalPartyCodesBase.REPUBLICAN]
+        voted_in_dem_primary_runoff = [x for x in primary_runoffs if x.vote_method.party == PoliticalPartyCodesBase.DEMOCRATIC]
+        
+        if not recent_elections:
+            return self
+        self.primary_score = round(len(primaries) / len(recent_elections), 2)
+        self.general_score = round(len(generals) / len(recent_elections), 2)
+        self.special_score = round(len(specials) / len(recent_elections), 2)
+        self.primary_runoff_score = round(len(primary_runoffs) / len(recent_elections), 2)
+        self.gop_primary_score = round(len(voted_in_gop_primary) / len(primaries), 2)
+        self.dem_primary_score = round(len(voted_in_dem_primary) / len(primaries), 2)
+        self.gop_primary_runoff_score = round(len(voted_in_gop_primary_runoff) / len(primary_runoffs), 2)
+        self.dem_primary_runoff_score = round(len(voted_in_dem_primary_runoff) / len(primary_runoffs), 2)
+        
+        return self
+        
